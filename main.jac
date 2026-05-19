@@ -119,10 +119,8 @@ sem identify_gaps = "Identify what important aspects of the question remain unan
 def find_connections(finding1: str, finding2: str) -> str by llm();
 sem find_connections = "Describe the relationship between these two findings. Return empty string if no meaningful connection exists.";
 
-def answer_subquestion(question: str, context: str) -> str by llm(
-    tools=[web_search]
-);
-sem answer_subquestion = "Answer this research sub-question using web search. Search for relevant information, then provide a clear answer based on what you find.";
+def answer_subquestion(question: str, search_results: str) -> str by llm();
+sem answer_subquestion = "Given search results about a topic, provide a clear and comprehensive answer to the research sub-question. Cite specific facts from the search results.";
 
 # ============================================================
 # Tools — External Data Access
@@ -214,7 +212,9 @@ walker Researcher {
         }
         print(f"  Researching: {here.question}");
 
-        answer = answer_subquestion(here.question, here.reasoning);
+        # Walker orchestrates: search first, then reason over results
+        search_results = web_search(here.question);
+        answer = answer_subquestion(here.question, search_results);
         here.answer = answer;
         here.confidence = Confidence.MEDIUM;
 
