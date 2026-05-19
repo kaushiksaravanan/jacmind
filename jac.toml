@@ -1,0 +1,18 @@
+[project]
+name = "JacMind"
+version = "0.1.0"
+description = "Graph-Memory Research Agent — multi-step reasoning with persistent knowledge graphs"
+authors = []
+
+[dependencies]
+requests = ">=2.28"
+
+[tool.jac]
+entry = "main.jac"
+
+[plugins.byllm.model]
+default_model = "gemini/gemini-2.5-flash"
+api_key = "${GEMINI_API_KEY}"
+
+[plugins.byllm.call_params]
+temperature = 0.7
