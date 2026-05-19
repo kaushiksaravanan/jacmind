@@ -19,6 +19,7 @@ ENV/
 # Jac
 *.jbc
 __jac_gen__/
+.jac/
 
 # IDE
 .vscode/
