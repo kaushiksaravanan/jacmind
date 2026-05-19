@@ -1,404 +1,610 @@
 """
-JacMind — Graph-Memory Research Agent
-A multi-step reasoning agent that builds persistent knowledge graphs.
-Demonstrates: byLLM, graph nodes, walkers, tool calling, structured output, semantic annotations.
+JacMind Health — Graph-Based Differential Diagnosis Agent
+A medical triage agent that reasons over a knowledge graph of symptoms,
+conditions, treatments, and contraindications using walker-based traversal.
+
+The graph IS the reasoning — walkers traverse paths to find diagnoses,
+detect drug interactions, and propagate risk through patient history.
+This is not a chatbot wrapper. The graph structure constrains and guides
+the AI's reasoning, making it explainable and auditable.
 """
 
 import json;
 import requests;
 
 # ============================================================
-# Enums for Structured AI Output
+# Structured Types for Medical Reasoning
 # ============================================================
 
-enum Confidence { LOW, MEDIUM, HIGH, CERTAIN }
-sem Confidence.LOW = "Uncertain, needs more evidence";
-sem Confidence.MEDIUM = "Some supporting evidence but not conclusive";
-sem Confidence.HIGH = "Strong evidence supports this";
-sem Confidence.CERTAIN = "Verified from multiple reliable sources";
+enum Severity { MILD, MODERATE, SEVERE, CRITICAL }
+sem Severity.MILD = "Minor discomfort, does not interfere with daily activities";
+sem Severity.MODERATE = "Noticeable impact on daily life, may need intervention";
+sem Severity.SEVERE = "Significant impairment, requires prompt medical attention";
+sem Severity.CRITICAL = "Life-threatening, requires immediate emergency care";
 
-enum QuestionType { FACTUAL, ANALYTICAL, COMPARATIVE, CAUSAL, EXPLORATORY }
-sem QuestionType.FACTUAL = "Seeking a specific fact or data point";
-sem QuestionType.ANALYTICAL = "Requires breaking down a complex topic";
-sem QuestionType.COMPARATIVE = "Comparing two or more things";
-sem QuestionType.CAUSAL = "Understanding cause and effect";
-sem QuestionType.EXPLORATORY = "Open-ended investigation of a topic";
+enum Urgency { ROUTINE, SOON, URGENT, EMERGENCY }
+sem Urgency.ROUTINE = "Can wait days to weeks for a scheduled appointment";
+sem Urgency.SOON = "Should be seen within 24-48 hours";
+sem Urgency.URGENT = "Needs medical attention within hours";
+sem Urgency.EMERGENCY = "Call 911 or go to ER immediately";
 
-enum Relevance { CORE, SUPPORTING, TANGENTIAL }
+enum Likelihood { UNLIKELY, POSSIBLE, PROBABLE, VERY_LIKELY }
+
+enum BodySystem { NEUROLOGICAL, CARDIOVASCULAR, RESPIRATORY, GASTROINTESTINAL, MUSCULOSKELETAL, ENDOCRINE, DERMATOLOGICAL, PSYCHIATRIC, IMMUNOLOGICAL, OTHER }
 
 # ============================================================
-# Graph Nodes — The Knowledge Structure
+# Graph Nodes — Medical Knowledge Structure
 # ============================================================
 
-node ResearchQuestion {
-    has question: str;
-    has question_type: QuestionType = QuestionType.EXPLORATORY;
-    has status: str = "pending";
-    has final_answer: str = "";
+node Patient {
+    has name: str;
+    has age: int = 0;
+    has sex: str = "";
+    has medical_history: list[str] = [];
+    has current_medications: list[str] = [];
+    has allergies: list[str] = [];
 }
 
-node SubQuestion {
-    has question: str;
+node Symptom {
+    has name: str;
+    has severity: Severity = Severity.MILD;
+    has duration: str = "";
+    has body_system: BodySystem = BodySystem.OTHER;
+    has description: str = "";
+}
+
+node Condition {
+    has name: str;
+    has description: str = "";
+    has severity: Severity = Severity.MODERATE;
+    has urgency: Urgency = Urgency.ROUTINE;
+    has prevalence: str = "common";
+    has body_system: BodySystem = BodySystem.OTHER;
+}
+
+node Treatment {
+    has name: str;
+    has treatment_type: str = "medication";
+    has dosage: str = "";
+    has warnings: list[str] = [];
+}
+
+node RiskFactor {
+    has name: str;
+    has description: str = "";
+    has modifiable: bool = True;
+}
+
+node DiagnosisResult {
+    has condition_name: str;
+    has likelihood: Likelihood = Likelihood.POSSIBLE;
     has reasoning: str = "";
-    has answer: str = "";
-    has confidence: Confidence = Confidence.LOW;
-    has sources: list[str] = [];
+    has matching_symptoms: list[str] = [];
+    has recommended_tests: list[str] = [];
+    has urgency: Urgency = Urgency.ROUTINE;
 }
 
-node Finding {
-    has content: str;
-    has source: str = "";
-    has relevance: Relevance = Relevance.SUPPORTING;
-    has confidence: Confidence = Confidence.MEDIUM;
-}
-
-node Synthesis {
+node TriageReport {
     has summary: str;
-    has key_insights: list[str] = [];
-    has confidence: Confidence = Confidence.MEDIUM;
-    has gaps: list[str] = [];
+    has urgency: Urgency = Urgency.ROUTINE;
+    has differential: list[str] = [];
+    has recommended_actions: list[str] = [];
+    has warnings: list[str] = [];
+    has confidence_note: str = "";
 }
 
 # ============================================================
-# Typed Edges — Relationships in the Knowledge Graph
+# Typed Edges — Medical Relationships
 # ============================================================
 
-edge DecomposesTo {
-    has reasoning: str = "";
+edge Presents {
+    has onset: str = "";
+    has severity: Severity = Severity.MILD;
 }
 
-edge AnsweredBy {
-    has method: str = "search";
+edge IndicatesCondition {
+    has strength: Likelihood = Likelihood.POSSIBLE;
+    has specificity: str = "low";
 }
 
-edge Supports {
-    has strength: str = "moderate";
+edge TreatedBy {
+    has first_line: bool = True;
+    has evidence_level: str = "moderate";
 }
 
-edge RelatesTo {
-    has relationship: str = "";
+edge ContraindicatedWith {
+    has reason: str = "";
+    has severity: str = "absolute";
 }
 
-edge Contradicts {
-    has explanation: str = "";
+edge IncreasesRisk {
+    has magnitude: str = "moderate";
+    has mechanism: str = "";
+}
+
+edge CoOccursWith {
+    has frequency: str = "often";
+}
+
+edge WorsensCondition {
+    has mechanism: str = "";
 }
 
 # ============================================================
-# AI-Powered Functions (byLLM)
+# AI Functions — Medical Reasoning via byLLM
 # ============================================================
 
-obj SubQuestionPlan {
-    has question: str;
+obj SymptomExtraction {
+    has name: str;
+    has severity: Severity;
+    has duration: str;
+    has body_system: BodySystem;
+}
+sem SymptomExtraction.name = "Medical symptom name in standard terminology";
+sem SymptomExtraction.duration = "How long the symptom has been present, e.g. '3 days', '2 weeks'";
+
+def extract_symptoms(patient_description: str) -> list[SymptomExtraction] by llm();
+sem extract_symptoms = "Extract individual medical symptoms from a patient's natural language description. Identify each distinct symptom, its severity, approximate duration, and which body system it affects. Be thorough — patients often mention symptoms casually.";
+
+obj DifferentialEntry {
+    has condition: str;
+    has likelihood: Likelihood;
     has reasoning: str;
-    has search_query: str;
+    has key_symptoms: list[str];
+    has recommended_tests: list[str];
 }
-sem SubQuestionPlan.reasoning = "Why this sub-question helps answer the main question";
-sem SubQuestionPlan.search_query = "The optimal web search query to find the answer";
+sem DifferentialEntry.reasoning = "Brief clinical reasoning for why this condition fits the symptom pattern";
+sem DifferentialEntry.recommended_tests = "Specific lab tests or imaging that would confirm or rule out this condition";
 
-def decompose_question(question: str, question_type: str) -> list[SubQuestionPlan] by llm();
-sem decompose_question = "Break a complex research question into 3-5 focused sub-questions that together would fully answer the main question. Each sub-question should be independently answerable and together they should cover the full scope.";
+def generate_differential(symptoms: list[str], patient_age: int, patient_sex: str, medical_history: list[str]) -> list[DifferentialEntry] by llm();
+sem generate_differential = "Generate a differential diagnosis list (3-6 conditions) ranked by likelihood given the symptom pattern, patient demographics, and medical history. Consider both common and dangerous conditions. For each, explain the clinical reasoning and what tests would confirm it. Always include at least one serious condition that should be ruled out.";
 
-def classify_question(question: str) -> QuestionType by llm();
-sem classify_question = "Classify what type of question this is based on what kind of answer it needs.";
+def assess_urgency(symptoms: list[str], conditions: list[str]) -> Urgency by llm();
+sem assess_urgency = "Determine the urgency level for this patient based on their symptoms and possible conditions. EMERGENCY if any symptom suggests stroke, MI, anaphylaxis, or other immediately life-threatening condition. URGENT if delay could cause significant harm. SOON if should be seen promptly. ROUTINE if can wait for scheduled visit.";
 
-def extract_findings(question: str, search_results: str) -> list[str] by llm();
-sem extract_findings = "Extract the key factual findings from search results that are relevant to answering the question. Return 2-5 concise factual statements.";
+def check_drug_interaction(medication1: str, medication2: str, conditions: list[str]) -> str by llm();
+sem check_drug_interaction = "Check if there is a clinically significant interaction between these two medications, especially given the patient's conditions. Return a brief warning if interaction exists, or empty string if safe.";
 
-def assess_confidence(finding: str, source: str) -> Confidence by llm();
-sem assess_confidence = "Assess how confident we should be in this finding based on its content and source.";
+def generate_triage_summary(symptoms: list[str], differential: list[str], urgency: str, patient_context: str) -> str by llm();
+sem generate_triage_summary = "Write a clear, empathetic triage summary for this patient. Include: what the symptoms suggest, what the possible conditions are ranked by likelihood, what the urgency level is, and what the patient should do next. Use plain language. Add appropriate disclaimers about seeking professional medical advice.";
 
-def assess_relevance(finding: str, main_question: str) -> Relevance by llm();
-sem assess_relevance = "Assess how relevant this finding is to answering the main research question.";
+def identify_red_flags(symptoms: list[str], patient_age: int) -> list[str] by llm();
+sem identify_red_flags = "Identify any red flag symptoms that require immediate medical attention. Consider the patient's age as a factor. Return a list of warnings, or empty list if no red flags present. Examples: sudden worst headache of life, chest pain with shortness of breath, unilateral weakness.";
 
-def synthesize_answer(question: str, findings: list[str]) -> str by llm();
-sem synthesize_answer = "Synthesize all findings into a comprehensive, well-structured answer to the research question. Be thorough but concise. Cite which findings support each point.";
-
-def identify_gaps(question: str, findings: list[str]) -> list[str] by llm();
-sem identify_gaps = "Identify what important aspects of the question remain unanswered or need more evidence.";
-
-def find_connections(finding1: str, finding2: str) -> str by llm();
-sem find_connections = "Describe the relationship between these two findings. Return empty string if no meaningful connection exists.";
-
-def answer_subquestion(question: str, search_results: str) -> str by llm();
-sem answer_subquestion = "Given search results about a topic, provide a clear and comprehensive answer to the research sub-question. Cite specific facts from the search results.";
+def suggest_lifestyle_modifications(conditions: list[str], risk_factors: list[str]) -> list[str] by llm();
+sem suggest_lifestyle_modifications = "Suggest evidence-based lifestyle modifications that could help manage the identified conditions and mitigate risk factors. Be specific and actionable.";
 
 # ============================================================
-# Tools — External Data Access
+# Web Search Tool for Medical Evidence
 # ============================================================
 
-"""Search the web for information on a topic. Returns relevant search results."""
-def web_search(query: str) -> str {
+"""Search medical information from DuckDuckGo. Returns health-related results."""
+def medical_search(query: str) -> str {
     try {
         response = requests.get(
             "https://api.duckduckgo.com/",
-            params={"q": query, "format": "json", "no_html": "1", "skip_disambig": "1"},
+            params={"q": f"{query} medical health", "format": "json", "no_html": "1", "skip_disambig": "1"},
             timeout=10
         );
         data = response.json();
         results: list[str] = [];
         if data.get("AbstractText") {
-            results.append(f"Summary: {data['AbstractText']}");
+            results.append(str(data["AbstractText"]));
         }
-        for topic in data.get("RelatedTopics", [])[:5] {
+        for topic in data.get("RelatedTopics", [])[:3] {
             if isinstance(topic, dict) and "Text" in topic {
                 results.append(str(topic["Text"]));
             }
         }
-        if not results {
-            results.append(f"No detailed results found for: {query}");
-        }
-        return "\n".join(results);
+        return "\n".join(results) if results else "No results found";
     } except Exception as e {
-        return f"Search failed: {str(e)}";
+        return f"Search unavailable: {str(e)}";
     }
-}
-
-"""Get the current knowledge graph state as a summary."""
-def get_graph_state() -> str {
-    questions = [root-->][?:ResearchQuestion];
-    findings = [root-->][?:Finding];
-    syntheses = [root-->][?:Synthesis];
-    return json.dumps({
-        "total_questions": len(questions),
-        "total_findings": len(findings),
-        "total_syntheses": len(syntheses)
-    });
 }
 
 # ============================================================
-# Walkers — Graph Traversal Agents
+# Walkers — Medical Reasoning Agents
 # ============================================================
 
-walker Decomposer {
-    """Visits a ResearchQuestion and creates sub-questions."""
-    has depth: int = 0;
+walker SymptomCollector {
+    """Extracts symptoms from patient description and adds them to the graph."""
+    has description: str;
+    has patient_name: str = "Patient";
+    has patient_age: int = 30;
+    has patient_sex: str = "unknown";
+    has medical_history: list[str] = [];
+    has medications: list[str] = [];
+    has allergies: list[str] = [];
 
     can start with Root entry {
-        visit [-->][?:ResearchQuestion];
-    }
-
-    can decompose with ResearchQuestion entry {
-        if here.status != "pending" {
-            return;
-        }
-        here.question_type = classify_question(here.question);
-        here.status = "decomposing";
-
-        plans = decompose_question(here.question, str(here.question_type));
-
-        for plan in plans {
-            sub = SubQuestion(
-                question=plan.question,
-                reasoning=plan.reasoning
-            );
-            here +>:DecomposesTo(reasoning=plan.reasoning):+> sub;
-            root ++> sub;
-        }
-        here.status = "decomposed";
-        print(f"  Decomposed into {len(plans)} sub-questions");
-    }
-}
-
-walker Researcher {
-    """Visits SubQuestions and finds answers using tool calling."""
-
-    can start with Root entry {
-        visit [-->][?:SubQuestion];
-    }
-
-    can research with SubQuestion entry {
-        if here.answer != "" {
-            return;
-        }
-        print(f"  Researching: {here.question}");
-
-        # Walker orchestrates: search first, then reason over results
-        search_results = web_search(here.question);
-        answer = answer_subquestion(here.question, search_results);
-        here.answer = answer;
-        here.confidence = Confidence.MEDIUM;
-
-        findings_text = extract_findings(here.question, answer);
-        for text in findings_text {
-            conf = assess_confidence(text, "web_search");
-            finding = Finding(
-                content=text,
-                source="web_search",
-                confidence=conf
-            );
-            here +>:AnsweredBy(method="web_search"):+> finding;
-            root ++> finding;
-        }
-        print(f"    Found {len(findings_text)} facts");
-    }
-}
-
-walker Connector {
-    """Traverses findings and identifies cross-references."""
-
-    can start with Root entry {
-        visit [-->][?:Finding];
-    }
-
-    can connect with Finding entry {
-        all_findings = [root-->][?:Finding];
-        for other in all_findings {
-            if other != here {
-                relationship = find_connections(here.content, other.content);
-                if relationship != "" {
-                    here +>:RelatesTo(relationship=relationship):+> other;
-                }
-            }
-        }
-    }
-}
-
-walker Synthesizer {
-    """Collects all findings and creates a synthesis."""
-    has main_question: str = "";
-
-    can start with Root entry {
-        questions = [-->][?:ResearchQuestion];
-        if questions {
-            self.main_question = questions[0].question;
-        }
-        visit [-->][?:ResearchQuestion];
-    }
-
-    can synthesize with ResearchQuestion entry {
-        all_findings = [root-->][?:Finding];
-        if not all_findings {
-            print("  No findings to synthesize yet.");
-            return;
-        }
-
-        finding_texts = [f.content for f in all_findings];
-
-        answer = synthesize_answer(here.question, finding_texts);
-        gaps = identify_gaps(here.question, finding_texts);
-
-        key_insights = finding_texts[:5];
-
-        synth = Synthesis(
-            summary=answer,
-            key_insights=key_insights,
-            confidence=Confidence.HIGH if len(all_findings) > 3 else Confidence.MEDIUM,
-            gaps=gaps
+        # Create or find patient node
+        patient = Patient(
+            name=self.patient_name,
+            age=self.patient_age,
+            sex=self.patient_sex,
+            medical_history=self.medical_history,
+            current_medications=self.medications,
+            allergies=self.allergies
         );
-        root ++> synth;
-        here +>:Supports(strength="strong"):+> synth;
-        here.final_answer = answer;
-        here.status = "complete";
+        root ++> patient;
 
-        print(f"  Synthesis complete ({len(all_findings)} findings -> answer)");
+        # Extract symptoms using byLLM
+        extracted = extract_symptoms(self.description);
+        print(f"\n  Extracted {len(extracted)} symptoms:");
+
+        for s in extracted {
+            symptom = Symptom(
+                name=s.name,
+                severity=s.severity,
+                duration=s.duration,
+                body_system=s.body_system,
+                description=f"{s.name} ({s.duration})"
+            );
+            patient +>:Presents(onset=s.duration, severity=s.severity):+> symptom;
+            root ++> symptom;
+            print(f"    - {s.name} [{s.severity}] ({s.duration}) [{s.body_system}]");
+        }
+
+        report {"patient": patient, "symptom_count": len(extracted)};
+    }
+}
+
+walker DiagnosticReasoner {
+    """Traverses the symptom graph to generate differential diagnoses."""
+
+    can start with Root entry {
+        patients = [-->][?:Patient];
+        if patients {
+            visit patients[0];
+        }
+    }
+
+    can diagnose with Patient entry {
+        # Gather all symptoms via graph traversal
+        symptoms = [here-->][?:Symptom];
+        symptom_names = [s.name for s in symptoms];
+
+        if not symptom_names {
+            print("  No symptoms recorded. Cannot diagnose.");
+            return;
+        }
+
+        print(f"\n  Analyzing {len(symptom_names)} symptoms for differential diagnosis...");
+
+        # Check for red flags first
+        red_flags = identify_red_flags(symptom_names, here.age);
+        if red_flags {
+            print("  !! RED FLAGS DETECTED:");
+            for flag in red_flags {
+                print(f"     !! {flag}");
+            }
+        }
+
+        # Generate differential diagnosis via byLLM
+        differential = generate_differential(
+            symptom_names,
+            here.age,
+            here.sex,
+            here.medical_history
+        );
+
+        # Assess overall urgency
+        condition_names = [d.condition for d in differential];
+        urgency = assess_urgency(symptom_names, condition_names);
+
+        print(f"\n  Urgency Level: {urgency}");
+        print(f"\n  Differential Diagnosis ({len(differential)} conditions):");
+
+        # Create condition nodes and link to symptoms
+        for entry in differential {
+            condition = Condition(
+                name=entry.condition,
+                urgency=urgency
+            );
+            root ++> condition;
+
+            # Link symptoms to conditions
+            for s in symptoms {
+                if s.name in entry.key_symptoms {
+                    s +>:IndicatesCondition(
+                        strength=entry.likelihood,
+                        specificity="moderate"
+                    ):+> condition;
+                }
+            }
+
+            # Create diagnosis result
+            dx = DiagnosisResult(
+                condition_name=entry.condition,
+                likelihood=entry.likelihood,
+                reasoning=entry.reasoning,
+                matching_symptoms=entry.key_symptoms,
+                recommended_tests=entry.recommended_tests,
+                urgency=urgency
+            );
+            root ++> dx;
+            here +>:IndicatesCondition(strength=entry.likelihood):+> dx;
+
+            print(f"    [{entry.likelihood}] {entry.condition}");
+            print(f"         Reasoning: {entry.reasoning}");
+            print(f"         Key symptoms: {', '.join(entry.key_symptoms)}");
+            print(f"         Tests: {', '.join(entry.recommended_tests)}");
+        }
+
         report {
-            "answer": answer,
-            "confidence": str(synth.confidence),
-            "findings_used": len(all_findings),
-            "knowledge_gaps": gaps
+            "differential": [{"condition": d.condition, "likelihood": str(d.likelihood), "reasoning": d.reasoning} for d in differential],
+            "urgency": str(urgency),
+            "red_flags": red_flags,
+            "symptom_count": len(symptom_names)
         };
     }
 }
 
-# ============================================================
-# Main Research Pipeline
-# ============================================================
-
-walker ResearchPipeline {
-    """Orchestrates the full research process."""
-    has question: str;
+walker ContraindicationChecker {
+    """Checks for drug interactions and contraindications in the patient's graph."""
 
     can start with Root entry {
-        print(f"\n{'='*60}");
-        print("JacMind Research Agent");
-        print(f"{'='*60}");
-        print(f"\nQuestion: {self.question}\n");
+        patients = [-->][?:Patient];
+        if patients {
+            visit patients[0];
+        }
+    }
 
-        # Step 1: Create the research question node
-        rq = ResearchQuestion(question=self.question);
-        root ++> rq;
-        print("[1/4] Decomposing question...");
+    can check with Patient entry {
+        medications = here.current_medications;
+        conditions = [c.name for c in [root-->][?:Condition]];
+        allergies = here.allergies;
 
-        # Step 2: Decompose
-        root spawn Decomposer();
+        warnings: list[str] = [];
 
-        # Step 3: Research each sub-question
-        print("\n[2/4] Researching sub-questions...");
-        root spawn Researcher();
+        if len(medications) < 2 and not allergies {
+            print("  No medication interactions to check.");
+            report {"warnings": []};
+            return;
+        }
 
-        # Step 4: Find connections
-        print("\n[3/4] Identifying connections...");
-        root spawn Connector();
+        print(f"\n  Checking {len(medications)} medications for interactions...");
 
-        # Step 5: Synthesize
-        print("\n[4/4] Synthesizing answer...");
-        result = root spawn Synthesizer();
+        # Check each medication pair
+        for i in range(len(medications)) {
+            for j in range(i + 1, len(medications)) {
+                interaction = check_drug_interaction(
+                    medications[i], medications[j], conditions
+                );
+                if interaction != "" {
+                    warning = f"INTERACTION: {medications[i]} + {medications[j]}: {interaction}";
+                    warnings.append(warning);
+                    print(f"    !! {warning}");
 
-        print(f"\n{'='*60}");
-        print("RESEARCH COMPLETE");
-        print(f"{'='*60}");
-
-        if result.reports {
-            data = result.reports[0];
-            print(f"\nAnswer:\n{data['answer']}");
-            print(f"\nConfidence: {data['confidence']}");
-            print(f"Findings used: {data['findings_used']}");
-            if data['knowledge_gaps'] {
-                print("\nRemaining gaps:");
-                for gap in data['knowledge_gaps'] {
-                    print(f"  - {gap}");
+                    # Create contraindication edge in graph
+                    treatments = [root-->][?:Treatment];
+                    for t in treatments {
+                        if t.name == medications[i] or t.name == medications[j] {
+                            t +>:ContraindicatedWith(reason=interaction):+> here;
+                        }
+                    }
                 }
             }
         }
 
-        # Report graph stats
-        questions = [root-->][?:ResearchQuestion];
-        sub_qs = [root-->][?:SubQuestion];
-        findings = [root-->][?:Finding];
-        syntheses = [root-->][?:Synthesis];
-        print(f"\nKnowledge Graph: {len(questions)} questions, {len(sub_qs)} sub-questions, {len(findings)} findings, {len(syntheses)} syntheses");
+        # Check allergies against possible treatments
+        for allergy in allergies {
+            warning = f"ALLERGY: Patient allergic to {allergy} — avoid related medications";
+            warnings.append(warning);
+            print(f"    !! {warning}");
+        }
 
-        report result.reports;
+        if not warnings {
+            print("    No interactions detected.");
+        }
+
+        report {"warnings": warnings};
     }
 }
 
-# ============================================================
-# Public API Endpoints (for jac start)
-# ============================================================
-
-"""Ask a research question and get a comprehensive answer with knowledge graph."""
-walker:pub research {
-    has question: str;
+walker TriageReportGenerator {
+    """Generates the final triage report by traversing all gathered evidence."""
 
     can start with Root entry {
-        result = root spawn ResearchPipeline(question=self.question);
-        report result.reports;
+        patients = [-->][?:Patient];
+        if patients {
+            visit patients[0];
+        }
     }
-}
 
-"""Get the current state of the knowledge graph."""
-walker:pub graph_status {
-    can start with Root entry {
-        questions = [-->][?:ResearchQuestion];
-        sub_qs = [-->][?:SubQuestion];
-        findings = [-->][?:Finding];
-        syntheses = [-->][?:Synthesis];
+    can generate with Patient entry {
+        # Gather all evidence from the graph
+        symptoms = [here-->][?:Symptom];
+        diagnoses = [root-->][?:DiagnosisResult];
+        conditions = [root-->][?:Condition];
+
+        symptom_names = [s.name for s in symptoms];
+        differential = [f"{d.condition_name} ({d.likelihood})" for d in diagnoses];
+        condition_names = [c.name for c in conditions];
+
+        # Determine urgency from diagnoses
+        urgency = Urgency.ROUTINE;
+        for d in diagnoses {
+            if d.urgency == Urgency.EMERGENCY { urgency = Urgency.EMERGENCY; }
+            elif d.urgency == Urgency.URGENT and urgency != Urgency.EMERGENCY { urgency = Urgency.URGENT; }
+            elif d.urgency == Urgency.SOON and urgency == Urgency.ROUTINE { urgency = Urgency.SOON; }
+        }
+
+        # Generate lifestyle recommendations
+        risk_factors = [r.name for r in [root-->][?:RiskFactor]];
+        lifestyle = suggest_lifestyle_modifications(condition_names, risk_factors);
+
+        # Generate summary
+        patient_context = f"{here.name}, age {here.age}, {here.sex}. History: {', '.join(here.medical_history) if here.medical_history else 'none reported'}";
+        summary = generate_triage_summary(
+            symptom_names,
+            differential,
+            str(urgency),
+            patient_context
+        );
+
+        # Build the report
+        actions: list[str] = [];
+        if urgency == Urgency.EMERGENCY {
+            actions.append("CALL 911 or go to nearest emergency room immediately");
+        } elif urgency == Urgency.URGENT {
+            actions.append("Seek medical attention within the next few hours");
+        } elif urgency == Urgency.SOON {
+            actions.append("Schedule appointment within 24-48 hours");
+        } else {
+            actions.append("Schedule routine appointment with your primary care physician");
+        }
+
+        for d in diagnoses[:3] {
+            if d.recommended_tests {
+                actions.append(f"Request: {', '.join(d.recommended_tests)}");
+            }
+        }
+
+        actions.extend(lifestyle);
+
+        # Create report node
+        report_node = TriageReport(
+            summary=summary,
+            urgency=urgency,
+            differential=differential,
+            recommended_actions=actions,
+            warnings=[],
+            confidence_note="This is an AI-assisted triage tool and does NOT replace professional medical advice. Always consult a qualified healthcare provider."
+        );
+        root ++> report_node;
+
+        print(f"\n{'='*60}");
+        print("TRIAGE REPORT");
+        print(f"{'='*60}");
+        print(f"\nPatient: {here.name}, Age {here.age}, {here.sex}");
+        print(f"Urgency: {urgency}");
+        print(f"\n{summary}");
+        print(f"\nDifferential Diagnosis:");
+        for d in differential {
+            print(f"  - {d}");
+        }
+        print(f"\nRecommended Actions:");
+        for a in actions {
+            print(f"  - {a}");
+        }
+        print(f"\n{'='*60}");
+        print("DISCLAIMER: This is an AI triage tool for informational purposes only.");
+        print("It does NOT replace professional medical diagnosis or treatment.");
+        print(f"{'='*60}");
 
         report {
-            "questions": [{"question": q.question, "status": q.status, "type": str(q.question_type)} for q in questions],
-            "sub_questions": [{"question": sq.question, "answer": sq.answer[:100], "confidence": str(sq.confidence)} for sq in sub_qs],
-            "findings_count": len(findings),
-            "syntheses_count": len(syntheses),
-            "total_nodes": len(questions) + len(sub_qs) + len(findings) + len(syntheses)
+            "summary": summary,
+            "urgency": str(urgency),
+            "differential": differential,
+            "actions": actions,
+            "disclaimer": report_node.confidence_note
         };
     }
 }
 
-"""Get all findings in the knowledge graph."""
-walker:pub get_findings {
+# ============================================================
+# Main Pipeline — Orchestrates Full Triage
+# ============================================================
+
+walker TriagePipeline {
+    """Complete medical triage: symptoms → diagnosis → interactions → report."""
+    has description: str;
+    has patient_name: str = "Patient";
+    has patient_age: int = 30;
+    has patient_sex: str = "unknown";
+    has medical_history: list[str] = [];
+    has medications: list[str] = [];
+    has allergies: list[str] = [];
+
     can start with Root entry {
-        findings = [-->][?:Finding];
-        report [{"content": f.content, "source": f.source, "confidence": str(f.confidence), "relevance": str(f.relevance)} for f in findings];
+        print(f"\n{'='*60}");
+        print("JacMind Health — AI Triage Agent");
+        print(f"{'='*60}");
+        print(f"\nPatient: {self.patient_name}, Age {self.patient_age}, {self.patient_sex}");
+        print(f"Chief complaint: {self.description}");
+        if self.medical_history { print(f"History: {', '.join(self.medical_history)}"); }
+        if self.medications { print(f"Medications: {', '.join(self.medications)}"); }
+        if self.allergies { print(f"Allergies: {', '.join(self.allergies)}"); }
+
+        # Phase 1: Extract symptoms
+        print(f"\n[1/4] Extracting symptoms...");
+        root spawn SymptomCollector(
+            description=self.description,
+            patient_name=self.patient_name,
+            patient_age=self.patient_age,
+            patient_sex=self.patient_sex,
+            medical_history=self.medical_history,
+            medications=self.medications,
+            allergies=self.allergies
+        );
+
+        # Phase 2: Differential diagnosis
+        print(f"\n[2/4] Generating differential diagnosis...");
+        dx_result = root spawn DiagnosticReasoner();
+
+        # Phase 3: Check contraindications
+        print(f"\n[3/4] Checking drug interactions...");
+        root spawn ContraindicationChecker();
+
+        # Phase 4: Generate triage report
+        print(f"\n[4/4] Generating triage report...");
+        result = root spawn TriageReportGenerator();
+
+        # Graph stats
+        patients = [root-->][?:Patient];
+        symptoms = [root-->][?:Symptom];
+        conditions = [root-->][?:Condition];
+        diagnoses = [root-->][?:DiagnosisResult];
+        print(f"\nKnowledge Graph: {len(patients)} patients, {len(symptoms)} symptoms, {len(conditions)} conditions, {len(diagnoses)} diagnoses");
+
+        report result.reports;
+    }
+}
+
+# ============================================================
+# Public API Endpoints
+# ============================================================
+
+"""Run a full triage assessment for a patient."""
+walker:pub triage {
+    has description: str;
+    has patient_name: str = "Patient";
+    has patient_age: int = 30;
+    has patient_sex: str = "unknown";
+    has medical_history: list[str] = [];
+    has medications: list[str] = [];
+    has allergies: list[str] = [];
+
+    can start with Root entry {
+        result = root spawn TriagePipeline(
+            description=self.description,
+            patient_name=self.patient_name,
+            patient_age=self.patient_age,
+            patient_sex=self.patient_sex,
+            medical_history=self.medical_history,
+            medications=self.medications,
+            allergies=self.allergies
+        );
+        report result.reports;
+    }
+}
+
+"""Get the patient's current medical knowledge graph."""
+walker:pub patient_graph {
+    can start with Root entry {
+        patients = [-->][?:Patient];
+        symptoms = [-->][?:Symptom];
+        conditions = [-->][?:Condition];
+        diagnoses = [-->][?:DiagnosisResult];
+
+        report {
+            "patients": [{"name": p.name, "age": p.age, "medications": p.current_medications} for p in patients],
+            "symptoms": [{"name": s.name, "severity": str(s.severity), "system": str(s.body_system)} for s in symptoms],
+            "conditions": [{"name": c.name, "urgency": str(c.urgency)} for c in conditions],
+            "diagnoses": [{"condition": d.condition_name, "likelihood": str(d.likelihood), "reasoning": d.reasoning} for d in diagnoses],
+            "total_nodes": len(patients) + len(symptoms) + len(conditions) + len(diagnoses)
+        };
     }
 }
 
@@ -407,12 +613,18 @@ walker:pub get_findings {
 # ============================================================
 
 with entry {
-    print("JacMind — Graph-Memory Research Agent");
+    print("JacMind Health — Graph-Based AI Triage Agent");
     print("Usage: jac run main.jac  (interactive demo)");
     print("       jac start main.jac  (REST API mode)\n");
 
-    # Demo: Research a question
-    root spawn ResearchPipeline(
-        question="What are the key advantages of graph-based memory systems for AI agents compared to traditional vector databases?"
+    # Demo case: complex patient with multiple symptoms and history
+    root spawn TriagePipeline(
+        description="I've been having persistent headaches for the past week, mostly behind my eyes. My vision gets blurry sometimes and I feel dizzy when I stand up. I also noticed some numbness in my left hand yesterday.",
+        patient_name="Demo Patient",
+        patient_age=45,
+        patient_sex="female",
+        medical_history=["hypertension", "type 2 diabetes"],
+        medications=["metformin", "lisinopril", "aspirin"],
+        allergies=["penicillin"]
     );
 }
